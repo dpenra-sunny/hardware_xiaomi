@@ -1,0 +1,96 @@
+From d03b474a40da3738f768a4393ef403e119df8ee1 Mon Sep 17 00:00:00 2001
+From: Dyneteve <dyneteve@hentaios.com>
+Date: Sun, 20 Feb 2022 13:52:26 +0100
+Subject: [PATCH] hidl: biometrics: Only load FP modules if data is encrypted
+
+Change-Id: I85b81cc7601a58804cbb8748bafe8800e9a1f928
+Signed-off-by: Cyber Knight <cyberknight755@gmail.com>
+---
+ .../fingerprint/BiometricsFingerprint.cpp     | 59 +++++++++++--------
+ 1 file changed, 35 insertions(+), 24 deletions(-)
+
+diff --git a/hidl/biometrics/fingerprint/BiometricsFingerprint.cpp b/hidl/biometrics/fingerprint/BiometricsFingerprint.cpp
+index d054fe9..01f9d25 100644
+--- a/hidl/biometrics/fingerprint/BiometricsFingerprint.cpp
++++ b/hidl/biometrics/fingerprint/BiometricsFingerprint.cpp
+@@ -15,6 +15,7 @@
+ #include "UdfpsHandler.h"
+ 
+ #include <android-base/properties.h>
++#include <cutils/properties.h>
+ #include <inttypes.h>
+ #include <unistd.h>
+ 
+@@ -55,35 +56,45 @@ BiometricsFingerprint::BiometricsFingerprint()
+       mUdfpsHandlerFactory(nullptr),
+       mUdfpsHandler(nullptr) {
+     sInstance = this;  // keep track of the most recent instance
+-    for (auto& [class_name, is_udfps] : kModules) {
+-        mDevice = openHal(class_name);
++
++    char fp_crypted[PROPERTY_VALUE_MAX];
++    property_get("ro.crypto.type", fp_crypted, "");
++
++    /*
++     * If the device is encrypted, we need to load the
++     * fingerprint module otherwise do nothing
++     */
++    if (strncmp(fp_crypted, "file", sizeof("file")) == 0) {
++        for (auto& [class_name, is_udfps] : kModules) {
++            mDevice = openHal(class_name);
++            if (!mDevice) {
++                ALOGE("Can't open HAL module, class %s", class_name);
++                continue;
++            }
++
++            ALOGI("Opened fingerprint HAL, class %s", class_name);
++            mIsUdfps = is_udfps;
++            SetProperty("persist.vendor.sys.fp.vendor", class_name);
++            break;
++        }
+         if (!mDevice) {
+-            ALOGE("Can't open HAL module, class %s", class_name);
+-            continue;
++            ALOGE("Can't open any HAL module");
++            SetProperty("persist.vendor.sys.fp.vendor", "none");
+         }
+ 
+-        ALOGI("Opened fingerprint HAL, class %s", class_name);
+-        mIsUdfps = is_udfps;
+-        SetProperty("persist.vendor.sys.fp.vendor", class_name);
+-        break;
+-    }
+-    if (!mDevice) {
+-        ALOGE("Can't open any HAL module");
+-        SetProperty("persist.vendor.sys.fp.vendor", "none");
+-    }
++        if (mIsUdfps) {
++            SetProperty("ro.hardware.fp.udfps", "true");
+ 
+-    if (mIsUdfps) {
+-        SetProperty("ro.hardware.fp.udfps", "true");
+-
+-        mUdfpsHandlerFactory = getUdfpsHandlerFactory();
+-        if (!mUdfpsHandlerFactory) {
+-            ALOGE("Can't get UdfpsHandlerFactory");
+-        } else {
+-            mUdfpsHandler = mUdfpsHandlerFactory->create();
+-            if (!mUdfpsHandler) {
+-                ALOGE("Can't create UdfpsHandler");
++            mUdfpsHandlerFactory = getUdfpsHandlerFactory();
++            if (!mUdfpsHandlerFactory) {
++                ALOGE("Can't get UdfpsHandlerFactory");
+             } else {
+-                mUdfpsHandler->init(mDevice);
++                mUdfpsHandler = mUdfpsHandlerFactory->create();
++                if (!mUdfpsHandler) {
++                    ALOGE("Can't create UdfpsHandler");
++                } else {
++                    mUdfpsHandler->init(mDevice);
++                }
+             }
+         }
+     }
+-- 
+2.46.0
+
